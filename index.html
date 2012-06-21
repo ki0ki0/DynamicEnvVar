@@ -1,0 +1,458 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>DynamicEnvVar by codereflect</title>
+
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1>DynamicEnvVar</h1>
+        <p>Dynamically Inject environment variables to Windows Processes</p>
+
+        <p class="view"><a href="https://github.com/codereflect/DynamicEnvVar">View the Project on GitHub <small>codereflect/DynamicEnvVar</small></a></p>
+
+
+        <ul>
+          <li><a href="https://github.com/codereflect/DynamicEnvVar/zipball/master">Download <strong>ZIP File</strong></a></li>
+          <li><a href="https://github.com/codereflect/DynamicEnvVar/tarball/master">Download <strong>TAR Ball</strong></a></li>
+          <li><a href="https://github.com/codereflect/DynamicEnvVar">View On <strong>GitHub</strong></a></li>
+        </ul>
+      </header>
+      <section>
+        <h2>Introduction</h2>
+
+<p>In many situations, it’s necessary to set application specific environment variables for testing and debugging purposes. These kind of variables are exclusive to the application and will be dead when the application exits. For example, suppose if you've a rendering application in which the rendering path is specified as environment variable. Sometimes it might be necessary to change these variables for testing or in some situations you may need to add or delete the existing one. In most cases, the application specific variables are controlled launching through script files after setting up necessary variables or by a launcher application (Environment variables are inherited from Parent Process). Still dynamically updating variables is out of our reach.</p>
+
+<p>In this article, I'm introducing a simple tool to dynamically set environment strings to any process in the system. This tool won't modify any settings of the system or user environment variables. Instead it adds/updates a particular process’s environment variables.</p>
+
+<p>This tool supports the following operations:</p>
+
+<ul>
+<li>Add a new variable</li>
+<li>Replace existing variable</li>
+<li>Append to existing variable (separated by “;”)</li>
+<li>Deleting a variable</li>
+</ul><h2>How Do I?</h2>
+
+<p>To Add/Replace a variable, just select a process or enter a valid process ID in the corresponding text boxes. Then press “Set” button. If it’s required to add to an existing variable, please check “Add to existing”. To delete a variable, enter a valid variable name and leave the value text box as empty. Make sure that you've unchecked the “Add to existing” check box. Under the hood OK let’s see how I accomplished this. It’s simple as follows:</p>
+
+<h2>Create a shared memory with user entered content and options</h2>
+
+<p>Inject our own DLL to the target process
+In the DLL main, open the share memory and read the required data and finally set the variable
+Return from DLL
+Now the DLL is not necessary to remain in the process, eject it.</p>
+
+<h2>Why Injecting?</h2>
+
+<p>Windows provided APIs will work with the current process. These APIs can't work with a foreign process. If a DLL is injected to a particular process, further code will be executed in the context of that particular process.</p>
+
+<h2>How to Inject a DLL?</h2>
+
+<p>There are several methods to inject a DLL. Please see Windows via C/C++ (or its previous version) to know more about different DLL injection methods. Here in this program, I've used Remote threads. I hope the following code can explain better than words. Anyway the basic technique is to set LoadLibrary as thread routine to load the DLL in remote process. The name of the DLL file must be accessible from the target process itself. For that, we've to use virtual memory APIs. See the code.</p>
+
+<div class="highlight">
+<pre><span class="c1">// Function to inject the library</span>
+<span class="kt">void</span> <span class="n">CDLLInjector</span><span class="o">::</span><span class="n">InjectLibW</span><span class="p">(</span> <span class="n">DWORD</span> <span class="n">dwProcessId</span> <span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">HANDLE</span> <span class="n">hProcess</span><span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span> <span class="c1">// Process handle</span>
+    <span class="n">PWSTR</span> <span class="n">pszLibFileRemote</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="n">HANDLE</span> <span class="n">hRemoteThread</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span> 
+    <span class="kr">__try</span>
+    <span class="p">{</span>
+        <span class="n">hProcess</span> <span class="o">=</span> <span class="n">OpenProcess</span><span class="p">(</span>
+            <span class="n">PROCESS_QUERY_INFORMATION</span> <span class="o">|</span>   
+            <span class="n">PROCESS_CREATE_THREAD</span>     <span class="o">|</span> 
+            <span class="n">PROCESS_VM_OPERATION</span> <span class="o">|</span>
+            <span class="n">PROCESS_VM_WRITE</span><span class="p">,</span>  <span class="c1">// For CreateRemoteThread</span>
+            <span class="n">FALSE</span><span class="p">,</span> <span class="n">dwProcessId</span><span class="p">);</span>
+
+        <span class="k">if</span><span class="p">(</span> <span class="o">!</span><span class="n">hProcess</span> <span class="p">)</span>
+        <span class="p">{</span>
+            <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Failed to update selected process"</span><span class="p">)</span> <span class="p">);</span>
+            <span class="kr">__leave</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="n">WCHAR</span> <span class="n">szFilePath</span><span class="p">[</span><span class="n">MAX_PATH</span><span class="p">];</span>
+        <span class="n">GetModuleFileNameW</span><span class="p">(</span> <span class="nb">NULL</span><span class="p">,</span> <span class="n">szFilePath</span><span class="p">,</span> <span class="n">MAX_PATH</span> <span class="p">);</span>
+
+        <span class="c1">// Remove file name of the string</span>
+        <span class="n">PathRemoveFileSpecW</span><span class="p">(</span> <span class="n">szFilePath</span> <span class="p">);</span>
+
+        <span class="c1">// Append the DLL file which is there in the same directory of exe</span>
+        <span class="n">LPCWSTR</span> <span class="n">pszLib</span> <span class="o">=</span> <span class="s">L"</span><span class="se">\\</span><span class="s">SetEnvLib.dll"</span><span class="p">;</span>
+
+        <span class="c1">// Append the string</span>
+        <span class="n">wcscat_s</span><span class="p">(</span> <span class="n">szFilePath</span><span class="p">,</span> <span class="n">MAX_PATH</span><span class="p">,</span> <span class="n">pszLib</span> <span class="p">);</span> 
+
+        <span class="kt">int</span> <span class="n">cch</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">+</span> <span class="n">lstrlenW</span><span class="p">(</span><span class="n">szFilePath</span><span class="p">);</span>
+        <span class="kt">int</span> <span class="n">cb</span>  <span class="o">=</span> <span class="n">cch</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">WCHAR</span><span class="p">);</span>
+
+        <span class="c1">// Allocate space in the remote process for the pathname</span>
+        <span class="n">pszLibFileRemote</span> <span class="o">=</span> <span class="p">(</span><span class="n">PWSTR</span><span class="p">)</span> <span class="n">VirtualAllocEx</span><span class="p">(</span> <span class="n">hProcess</span><span class="p">,</span> 
+            <span class="nb">NULL</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span> 
+            <span class="n">MEM_COMMIT</span><span class="p">,</span> <span class="n">PAGE_READWRITE</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span> <span class="n">pszLibFileRemote</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> 
+        <span class="p">{</span>
+            <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Unable to allocate memory"</span><span class="p">)</span> <span class="p">);</span>
+            <span class="k">return</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="c1">// Copy the DLL's pathname to the remote process' address space</span>
+        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">WriteProcessMemory</span><span class="p">(</span><span class="n">hProcess</span><span class="p">,</span> <span class="n">pszLibFileRemote</span><span class="p">,</span>
+            <span class="p">(</span><span class="n">PVOID</span><span class="p">)</span> <span class="n">szFilePath</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">))</span> 
+        <span class="p">{</span>
+            <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span> <span class="s">"Failed to write"</span> <span class="p">));</span>
+            <span class="k">return</span><span class="p">;</span>
+        <span class="p">};</span>
+
+        <span class="c1">// Create remote thread and inject the library</span>
+        <span class="n">hRemoteThread</span> <span class="o">=</span> <span class="n">CreateRemoteThread</span><span class="p">(</span> <span class="n">hProcess</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> 
+            <span class="p">(</span><span class="n">LPTHREAD_START_ROUTINE</span><span class="p">)</span><span class="n">LoadLibraryW</span><span class="p">,</span> 
+            <span class="n">pszLibFileRemote</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">,</span><span class="nb">NULL</span> <span class="p">);</span>
+
+        <span class="k">if</span><span class="p">(</span> <span class="o">!</span><span class="n">hRemoteThread</span> <span class="p">)</span>
+        <span class="p">{</span>
+            <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Failed to update selected process"</span><span class="p">)</span> <span class="p">);</span>
+            <span class="kr">__leave</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="n">WaitForSingleObject</span><span class="p">(</span> <span class="n">hRemoteThread</span><span class="p">,</span> <span class="n">INFINITE</span> <span class="p">);</span>
+
+        <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Successfully Set values"</span><span class="p">));</span>
+    <span class="p">}</span>
+    <span class="kr">__finally</span> <span class="c1">// Do the cleanup</span>
+    <span class="p">{</span>
+        <span class="c1">// Free the remote memory that contained the DLL's pathname</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">pszLibFileRemote</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">VirtualFreeEx</span><span class="p">(</span><span class="n">hProcess</span><span class="p">,</span> <span class="n">pszLibFileRemote</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">MEM_RELEASE</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span> <span class="n">hRemoteThread</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hRemoteThread</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span> <span class="n">hProcess</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hProcess</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</pre>
+</div>
+
+
+<h2>How to Eject an Injected DLL?</h2>
+
+<p>Once you have completed the task, it’s not good to make our DLL as a burden to the target process. Again we unload the library in the same way we loaded it. Create Remote thread with FreeLibrary API and pass the module base address of SetEnvVarLIb.dll. For this, we can use Toolhelp library APIs. If we create the module handle snapshot of the target process, it’d be able to get the base of address of our injected DLL. See the code below for more details:</p>
+
+<div class="highlight">
+<pre><span class="c1">// Eject the library loaded to remote process</span>
+<span class="n">BOOL</span> <span class="n">CDLLInjector</span><span class="o">::</span><span class="n">EjectLibW</span><span class="p">(</span> <span class="n">DWORD</span> <span class="n">dwProcessID</span> <span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">BOOL</span> <span class="n">bOk</span>           <span class="o">=</span> <span class="n">FALSE</span><span class="p">;</span> <span class="c1">// Assume that the function fails</span>
+    <span class="n">HANDLE</span> <span class="n">hthSnapshot</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="n">HANDLE</span> <span class="n">hProcess</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">,</span> <span class="n">hThread</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+
+    <span class="kr">__try</span>
+    <span class="p">{</span>
+        <span class="c1">// Grab a new snapshot of the process</span>
+        <span class="n">hthSnapshot</span> <span class="o">=</span> <span class="n">CreateToolhelp32Snapshot</span>
+                <span class="p">(</span><span class="n">TH32CS_SNAPMODULE</span><span class="p">,</span> <span class="n">dwProcessID</span> <span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hthSnapshot</span> <span class="o">==</span> <span class="n">INVALID_HANDLE_VALUE</span><span class="p">)</span> <span class="kr">__leave</span><span class="p">;</span>
+
+        <span class="c1">// Get the HMODULE of the desired library</span>
+        <span class="n">MODULEENTRY32W</span> <span class="n">me</span> <span class="o">=</span> <span class="p">{</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">me</span><span class="p">)</span> <span class="p">};</span>
+        <span class="n">BOOL</span> <span class="n">bFound</span> <span class="o">=</span> <span class="n">FALSE</span><span class="p">;</span>
+        <span class="n">BOOL</span> <span class="n">bMoreMods</span> <span class="o">=</span> <span class="n">Module32FirstW</span><span class="p">(</span><span class="n">hthSnapshot</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">me</span><span class="p">);</span>
+
+        <span class="c1">// Iterate through all the loaded modules</span>
+        <span class="k">for</span> <span class="p">(;</span> <span class="n">bMoreMods</span><span class="p">;</span> <span class="n">bMoreMods</span> <span class="o">=</span> <span class="n">Module32NextW</span><span class="p">(</span><span class="n">hthSnapshot</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">me</span><span class="p">))</span>
+        <span class="p">{</span>
+            <span class="n">bFound</span> <span class="o">=</span> <span class="p">(</span><span class="n">_wcsicmp</span><span class="p">(</span><span class="n">me</span><span class="p">.</span><span class="n">szModule</span><span class="p">,</span>  <span class="s">L"SetEnvLib.dll"</span> <span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="o">||</span> 
+                <span class="p">(</span><span class="n">_wcsicmp</span><span class="p">(</span><span class="n">me</span><span class="p">.</span><span class="n">szExePath</span><span class="p">,</span> <span class="s">L"SetEnvLib.dll"</span> <span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">);</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">bFound</span><span class="p">)</span> <span class="k">break</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">bFound</span><span class="p">)</span> <span class="kr">__leave</span><span class="p">;</span>
+
+        <span class="c1">// Get a handle for the target process.</span>
+        <span class="n">hProcess</span> <span class="o">=</span> <span class="n">OpenProcess</span><span class="p">(</span>
+            <span class="n">PROCESS_QUERY_INFORMATION</span> <span class="o">|</span>   
+            <span class="n">PROCESS_CREATE_THREAD</span>     <span class="o">|</span> 
+            <span class="n">PROCESS_VM_OPERATION</span><span class="p">,</span>  <span class="c1">// For CreateRemoteThread</span>
+            <span class="n">FALSE</span><span class="p">,</span> <span class="n">dwProcessID</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hProcess</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> <span class="kr">__leave</span><span class="p">;</span>
+
+        <span class="c1">// Get the address of FreeLibrary in Kernel32.dll</span>
+        <span class="n">PTHREAD_START_ROUTINE</span> <span class="n">pfnThreadRtn</span> <span class="o">=</span> <span class="p">(</span><span class="n">PTHREAD_START_ROUTINE</span><span class="p">)</span>
+            <span class="n">GetProcAddress</span>
+            <span class="p">(</span><span class="n">GetModuleHandle</span><span class="p">(</span><span class="n">TEXT</span><span class="p">(</span><span class="s">"Kernel32"</span><span class="p">)),</span> <span class="s">"FreeLibrary"</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">pfnThreadRtn</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> <span class="kr">__leave</span><span class="p">;</span>
+
+        <span class="c1">// Create a remote thread that calls FreeLibrary()</span>
+        <span class="n">hThread</span> <span class="o">=</span> <span class="n">CreateRemoteThread</span><span class="p">(</span><span class="n">hProcess</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> 
+            <span class="n">pfnThreadRtn</span><span class="p">,</span> <span class="n">me</span><span class="p">.</span><span class="n">modBaseAddr</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hThread</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> <span class="kr">__leave</span><span class="p">;</span>
+
+        <span class="c1">// Wait for the remote thread to terminate</span>
+        <span class="n">WaitForSingleObject</span><span class="p">(</span><span class="n">hThread</span><span class="p">,</span> <span class="n">INFINITE</span><span class="p">);</span>
+
+        <span class="n">bOk</span> <span class="o">=</span> <span class="n">TRUE</span><span class="p">;</span> <span class="c1">// Everything executed successfully</span>
+    <span class="p">}</span>
+    <span class="kr">__finally</span> 
+    <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">hthSnapshot</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hthSnapshot</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">hThread</span>     <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hThread</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">hProcess</span>    <span class="o">!=</span> <span class="nb">NULL</span><span class="p">)</span> 
+            <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hProcess</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    <span class="k">return</span> <span class="n">bOk</span><span class="p">;</span>
+<span class="p">}</span>
+</pre>
+</div>
+
+
+<h2>Preparing the Shared Memory before Inject</h2>
+
+<p>OK now you learned about the basics of Injecting and Ejecting. Before injecting the code, we have to prepare the data in a shared memory. In our case, we’ve 3 things to share to the DLL.</p>
+
+<ul>
+<li>Variable</li>
+<li>Value</li>
+<li>Flag to specify add to existing or not</li>
+</ul><p>The following structure will help us to hold the required information:</p>
+
+<div class="highlight">
+<pre><span class="sr">//</span> <span class="no">Structure</span> <span class="n">to</span> <span class="n">share</span> <span class="n">data</span>
+<span class="c1">#pragma pack( push )</span>
+<span class="c1">#pragma pack( 4 )</span>
+<span class="n">struct</span> <span class="no">SharedData</span>
+<span class="p">{</span>
+    <span class="no">BOOL</span> <span class="n">bAddToExisting</span><span class="p">;</span>
+    <span class="no">WCHAR</span> <span class="n">strVariable</span><span class="o">[</span><span class="mi">1024</span><span class="o">]</span><span class="p">;</span>
+    <span class="no">WCHAR</span> <span class="n">strValue</span><span class="o">[</span><span class="mi">1024</span><span class="o">]</span><span class="p">;</span>
+
+    <span class="no">SharedData</span><span class="p">()</span>
+    <span class="p">{</span>
+        <span class="no">ZeroMemory</span><span class="p">(</span> <span class="n">strVariable</span><span class="p">,</span> <span class="n">sizeof</span><span class="p">(</span> <span class="n">strVariable</span> <span class="p">));</span>
+        <span class="no">ZeroMemory</span><span class="p">(</span> <span class="n">strValue</span><span class="p">,</span> <span class="n">sizeof</span><span class="p">(</span> <span class="n">strValue</span> <span class="p">));</span>
+        <span class="n">bAddToExisting</span> <span class="o">=</span> <span class="no">TRUE</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">};</span>
+</pre>
+</div>
+
+
+<p>To keep the size of structure the same in both DLL and our injecting application, we’ve set the packing values explicitly. Otherwise it might be affected with the project settings or pragma pack pre-processor. Now create and write the data to shared memory. To keep it uniform, we’re always dealing with UNICODE character set. The CDLLInjector::SetEnvironmentVariable function accepts CString values which define the character set according to the project settings. Internally the function converts ANSI string to UNICODE if the project’s settings is not UNICODE and calls the UNICODE functions which does the actual task.</p>
+
+<div class="highlight">
+<pre><span class="c1">// Update the user entered data to sharememory</span>
+<span class="n">BOOL</span> <span class="n">CDLLInjector</span><span class="o">::</span><span class="n">CreateAndCopyToShareMem</span>
+    <span class="p">(</span> <span class="n">LPCWSTR</span> <span class="n">lpVarName</span><span class="p">,</span> <span class="n">LPCWSTR</span> <span class="n">lpVarVal</span><span class="p">,</span> <span class="n">BOOL</span> <span class="n">bAddToExisting</span> <span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">SharedData</span> <span class="n">stData</span><span class="p">;</span>
+
+    <span class="kt">int</span> <span class="n">nLenVar</span> <span class="o">=</span> <span class="n">wcslen</span><span class="p">(</span> <span class="n">lpVarName</span> <span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="mi">0</span> <span class="o">==</span> <span class="n">nLenVar</span> <span class="o">||</span> <span class="n">nLenVar</span> <span class="o">&gt;=</span> <span class="n">_countof</span><span class="p">(</span> <span class="n">stData</span><span class="p">.</span><span class="n">strVariable</span> <span class="p">))</span>
+    <span class="p">{</span>
+        <span class="n">AfxMessageBox</span><span class="p">(</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Variable length is too high. </span>
+                <span class="n">Currently</span> <span class="n">supports</span> <span class="n">only</span> <span class="mi">1024</span> <span class="n">chars</span><span class="s">" ));</span>
+        <span class="k">return</span> <span class="n">FALSE</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">LPWSTR</span> <span class="n">pBuf</span><span class="p">;</span>
+
+    <span class="c1">// prepare data for copying </span>
+    <span class="n">wcscpy_s</span><span class="p">(</span> <span class="n">stData</span><span class="p">.</span><span class="n">strVariable</span><span class="p">,</span> <span class="n">_countof</span><span class="p">(</span> <span class="n">stData</span><span class="p">.</span><span class="n">strVariable</span><span class="p">),</span> <span class="n">lpVarName</span> <span class="p">);</span>
+    <span class="n">wcscpy_s</span><span class="p">(</span> <span class="n">stData</span><span class="p">.</span><span class="n">strValue</span><span class="p">,</span> <span class="n">_countof</span><span class="p">(</span> <span class="n">stData</span><span class="p">.</span><span class="n">strValue</span><span class="p">),</span> <span class="n">lpVarVal</span> <span class="p">);</span>
+    <span class="n">stData</span><span class="p">.</span><span class="n">bAddToExisting</span> <span class="o">=</span> <span class="n">bAddToExisting</span><span class="p">;</span>
+
+    <span class="n">m_hMapFile</span> <span class="o">=</span> <span class="n">CreateFileMapping</span><span class="p">(</span> <span class="n">INVALID_HANDLE_VALUE</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">,</span> 
+                <span class="n">PAGE_READWRITE</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">stData</span><span class="p">),</span>
+                <span class="n">SHAREMEM_NAME</span> <span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span> <span class="n">m_hMapFile</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> 
+    <span class="p">{</span> 
+        <span class="n">MessageBox</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Could not create file mapping object"</span><span class="p">),</span> 
+            <span class="n">_T</span><span class="p">(</span><span class="s">"Error"</span><span class="p">),</span> <span class="n">MB_OK</span> <span class="o">|</span> <span class="n">MB_ICONERROR</span> <span class="p">);</span>
+        <span class="k">return</span> <span class="n">FALSE</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">pBuf</span> <span class="o">=</span> <span class="p">(</span><span class="n">LPWSTR</span><span class="p">)</span> <span class="n">MapViewOfFile</span><span class="p">(</span> <span class="n">m_hMapFile</span><span class="p">,</span> <span class="n">FILE_MAP_ALL_ACCESS</span><span class="p">,</span> 
+                <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span> <span class="n">stData</span> <span class="p">));</span>
+
+    <span class="k">if</span> <span class="p">(</span> <span class="n">pBuf</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> 
+    <span class="p">{</span> 
+        <span class="n">MessageBox</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">_T</span><span class="p">(</span><span class="s">"Could not map view of file"</span><span class="p">),</span> 
+            <span class="n">_T</span><span class="p">(</span> <span class="s">"Error"</span> <span class="p">),</span> <span class="n">MB_OK</span> <span class="o">|</span> <span class="n">MB_ICONERROR</span> <span class="p">);</span> 
+
+        <span class="n">CloseHandle</span><span class="p">(</span><span class="n">m_hMapFile</span><span class="p">);</span>
+        <span class="n">m_hMapFile</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+        <span class="k">return</span> <span class="n">FALSE</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="c1">// Copy the data</span>
+    <span class="n">CopyMemory</span><span class="p">((</span><span class="n">PVOID</span><span class="p">)</span><span class="n">pBuf</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">stData</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span> <span class="n">stData</span> <span class="p">));</span>
+
+    <span class="n">UnmapViewOfFile</span><span class="p">(</span><span class="n">pBuf</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">TRUE</span><span class="p">;</span>
+<span class="p">}</span>
+</pre>
+</div>
+
+
+<h2>What happens after Injecting to Remote process?</h2>
+
+<p>Now we’re done with the main application. Now we can start analyzing the DLL being injected. It simply opens the shared memory and reads it into the shared structure which we discussed previously. See the code.</p>
+
+<div class="highlight">
+<pre><span class="c1">// Function which reads and updates shared memory</span>
+<span class="n">BOOL</span> <span class="n">UpdateEnvVar</span><span class="p">()</span>
+<span class="p">{</span>
+    <span class="n">HANDLE</span> <span class="n">hMapFile</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="n">SharedData</span><span class="o">*</span> <span class="n">pShared</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="n">hMapFile</span> <span class="o">=</span> <span class="n">OpenFileMapping</span><span class="p">(</span> <span class="n">FILE_MAP_READ</span><span class="p">,</span> 
+        <span class="n">FALSE</span><span class="p">,</span> <span class="n">SHAREMEM_NAME</span> <span class="p">);</span>   <span class="c1">// name of mapping object </span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">hMapFile</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> 
+    <span class="p">{</span> 
+        <span class="n">OutputDebugString</span><span class="p">(</span><span class="n">TEXT</span><span class="p">(</span><span class="s">"Could not open file mapping object"</span><span class="p">));</span>
+        <span class="k">return</span> <span class="n">FALSE</span><span class="p">;</span>
+    <span class="p">}</span> 
+
+    <span class="n">pShared</span> <span class="o">=</span> <span class="p">(</span><span class="n">SharedData</span><span class="o">*</span><span class="p">)</span> <span class="n">MapViewOfFile</span><span class="p">(</span><span class="n">hMapFile</span><span class="p">,</span> <span class="c1">// handle to map object</span>
+        <span class="n">FILE_MAP_READ</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span> <span class="n">SharedData</span> <span class="p">));</span>                   
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">pShared</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span> 
+    <span class="p">{</span> 
+        <span class="n">OutputDebugString</span><span class="p">(</span><span class="n">TEXT</span><span class="p">(</span><span class="s">"Could not map view of file"</span><span class="p">));</span> 
+        <span class="k">return</span> <span class="n">FALSE</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span><span class="p">(</span> <span class="o">!</span><span class="n">pShared</span><span class="o">-&gt;</span><span class="n">bAddToExisting</span> <span class="p">)</span>
+    <span class="p">{</span>
+        <span class="k">if</span><span class="p">(</span> <span class="n">wcslen</span><span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strValue</span> <span class="p">))</span>
+        <span class="p">{</span>
+            <span class="n">SetEnvironmentVariableW</span><span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> 
+                        <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strValue</span><span class="p">);</span>
+        <span class="p">}</span>
+        <span class="k">else</span>
+        <span class="p">{</span>
+            <span class="c1">// Delete variable</span>
+            <span class="n">SetEnvironmentVariableW</span><span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> <span class="nb">NULL</span> <span class="p">);</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+    <span class="k">else</span>
+    <span class="p">{</span>
+        <span class="c1">// Get the required size</span>
+        <span class="k">const</span> <span class="n">DWORD</span> <span class="n">dwReturn</span> <span class="o">=</span> <span class="n">GetEnvironmentVariable</span>
+                    <span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span> <span class="p">);</span>
+        <span class="k">const</span> <span class="n">DWORD</span> <span class="n">dwErr</span> <span class="o">=</span> <span class="n">GetLastError</span><span class="p">();</span>
+
+        <span class="k">if</span><span class="p">(</span> <span class="mi">0</span> <span class="o">==</span>  <span class="n">dwReturn</span> <span class="o">&amp;&amp;</span> 
+            <span class="n">ERROR_ENVVAR_NOT_FOUND</span> <span class="o">==</span> <span class="n">dwErr</span> <span class="p">)</span> <span class="c1">// Variable not found</span>
+        <span class="p">{</span>
+            <span class="c1">// Set the new one</span>
+            <span class="n">SetEnvironmentVariableW</span><span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> 
+                        <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strValue</span><span class="p">);</span>
+        <span class="p">}</span>
+        <span class="k">else</span> <span class="k">if</span><span class="p">(</span> <span class="n">dwReturn</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="p">)</span>
+        <span class="p">{</span>
+            <span class="n">WCHAR</span><span class="o">*</span> <span class="n">pstrExisting</span> <span class="o">=</span> <span class="k">new</span> <span class="n">WCHAR</span><span class="p">[</span><span class="mi">1024</span><span class="p">];</span>
+            <span class="k">if</span><span class="p">(</span> <span class="mi">0</span> <span class="o">==</span> <span class="n">GetEnvironmentVariable</span><span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> 
+                <span class="n">pstrExisting</span><span class="p">,</span> <span class="n">dwReturn</span> <span class="p">)</span> <span class="o">&amp;&amp;</span>
+                <span class="n">GetLastError</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span> <span class="p">)</span>
+            <span class="p">{</span>
+                <span class="n">std</span><span class="o">::</span><span class="n">wstring</span> <span class="n">strNew</span><span class="p">(</span> <span class="n">pstrExisting</span> <span class="p">);</span>
+                <span class="n">strNew</span> <span class="o">+=</span> <span class="s">L";"</span><span class="p">;</span>
+                <span class="n">strNew</span> <span class="o">+=</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strValue</span><span class="p">;</span>
+                <span class="n">SetEnvironmentVariableW</span>
+                <span class="p">(</span> <span class="n">pShared</span><span class="o">-&gt;</span><span class="n">strVariable</span><span class="p">,</span> <span class="n">strNew</span><span class="p">.</span><span class="n">c_str</span><span class="p">());</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+
+
+    <span class="k">if</span><span class="p">(</span> <span class="n">pShared</span> <span class="p">)</span>
+        <span class="n">UnmapViewOfFile</span><span class="p">(</span><span class="n">pShared</span><span class="p">);</span>
+    <span class="k">if</span><span class="p">(</span> <span class="n">hMapFile</span> <span class="p">)</span>
+        <span class="n">CloseHandle</span><span class="p">(</span><span class="n">hMapFile</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">TRUE</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">BOOL</span> <span class="n">APIENTRY</span> <span class="n">DllMain</span><span class="p">(</span> <span class="n">HMODULE</span> <span class="n">hModule</span><span class="p">,</span>
+             <span class="n">DWORD</span>  <span class="n">ul_reason_for_call</span><span class="p">,</span>
+             <span class="n">LPVOID</span> <span class="n">lpReserved</span>
+                      <span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">switch</span> <span class="p">(</span><span class="n">ul_reason_for_call</span><span class="p">)</span>
+    <span class="p">{</span>
+    <span class="k">case</span> <span class="nl">DLL_PROCESS_ATTACH:</span>
+        <span class="p">{</span>
+            <span class="n">TCHAR</span> <span class="n">buff</span><span class="p">[</span><span class="n">MAX_PATH</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span> <span class="mi">0</span> <span class="p">};</span>
+            <span class="n">_stprintf_s</span><span class="p">(</span> <span class="n">buff</span><span class="p">,</span> <span class="n">_T</span><span class="p">(</span> <span class="s">"Attached Process: %d"</span> <span class="p">),</span> 
+                        <span class="n">GetCurrentProcessId</span><span class="p">());</span>
+            <span class="n">OutputDebugString</span><span class="p">(</span> <span class="n">buff</span> <span class="p">);</span>
+            <span class="n">UpdateEnvVar</span><span class="p">();</span>
+        <span class="p">}</span>
+
+    <span class="k">case</span> <span class="nl">DLL_THREAD_ATTACH:</span>
+    <span class="k">case</span> <span class="nl">DLL_THREAD_DETACH:</span>
+    <span class="k">case</span> <span class="nl">DLL_PROCESS_DETACH:</span>
+        <span class="k">break</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">TRUE</span><span class="p">;</span>
+<span class="p">}</span>
+</pre>
+</div>
+
+
+<h2>Limitations</h2>
+
+<p>The maximum length of variable that is supported is 1024 and the same number of characters for value.</p>
+
+<h2>How To Verify?</h2>
+
+<ul>
+<li>Use process explorer</li>
+<li>My Other tool - Read Process Environment Variables</li>
+<li>History</li>
+</ul><p>30-Dec-2008 - Initial version</p>
+
+<h3>Authors and Contributors</h3>
+
+<p>Sarath C (<a href="https://github.com/codereflect" class="user-mention">@codereflect</a>)</p>
+
+<h3>Support or Contact</h3>
+
+<p>csarath[at]gmail.com</p>
+      </section>
+      <footer>
+        <p>This project is maintained by <a href="https://github.com/codereflect">codereflect</a></p>
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="javascripts/scale.fix.js"></script>
+              <script type="text/javascript">
+            var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+            document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+          </script>
+          <script type="text/javascript">
+            try {
+              var pageTracker = _gat._getTracker("UA-2191463-6");
+            pageTracker._trackPageview();
+            } catch(err) {}
+          </script>
+
+  </body>
+</html>
